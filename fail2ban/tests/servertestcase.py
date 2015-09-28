@@ -30,6 +30,7 @@ import tempfile
 import os
 import locale
 import sys
+import platform
 
 from ..server.failregex import Regex, FailRegex, RegexException
 from ..server.server import Server
@@ -46,11 +47,14 @@ except ImportError: # pragma: no cover
 
 TEST_FILES_DIR = os.path.join(os.path.dirname(__file__), "files")
 
+
 class TestServer(Server):
 	def setLogLevel(self, *args, **kwargs):
 		pass
+
 	def setLogTarget(self, *args, **kwargs):
 		pass
+
 
 class TransmitterBase(unittest.TestCase):
 	
@@ -70,17 +74,24 @@ class TransmitterBase(unittest.TestCase):
 		"""Call after every test case."""
 		self.server.quit()
 
-	def setGetTest(self, cmd, inValue, outValue=None, jail=None):
+	def setGetTest(self, cmd, inValue, outValue=None, outCode=0, jail=None, repr_=False):
 		setCmd = ["set", cmd, inValue]
 		getCmd = ["get", cmd]
 		if jail is not None:
 			setCmd.insert(1, jail)
 			getCmd.insert(1, jail)
+
 		if outValue is None:
 			outValue = inValue
 
-		self.assertEqual(self.transm.proceed(setCmd), (0, outValue))
-		self.assertEqual(self.transm.proceed(getCmd), (0, outValue))
+		def v(x):
+			"""Prepare value for comparison"""
+			return (repr(x) if repr_ else x)
+
+		self.assertEqual(v(self.transm.proceed(setCmd)), v((outCode, outValue)))
+		if not outCode:
+			# if we expected to get it set without problem, check new value
+			self.assertEqual(v(self.transm.proceed(getCmd)), v((0, outValue)))
 
 	def setGetTestNOK(self, cmd, inValue, jail=None):
 		setCmd = ["set", cmd, inValue]
@@ -137,6 +148,7 @@ class TransmitterBase(unittest.TestCase):
 				self.transm.proceed(["get", jail, cmd]),
 				(0, outValues[n+1:]))
 
+
 class Transmitter(TransmitterBase):
 
 	def setUp(self):
@@ -165,8 +177,14 @@ class Transmitter(TransmitterBase):
 		self.setGetTestNOK("dbfile", tmpFilename)
 		self.server.delJail(self.jailName)
 		self.setGetTest("dbfile", tmpFilename)
+		# the same file name (again no jails / not changed):
+		self.setGetTest("dbfile", tmpFilename)
 		self.setGetTest("dbpurgeage", "600", 600)
 		self.setGetTestNOK("dbpurgeage", "LIZARD")
+		# the same file name (again with jails / not changed):
+		self.server.addJail(self.jailName, "auto")
+		self.setGetTest("dbfile", tmpFilename)
+		self.server.delJail(self.jailName)
 
 		# Disable database
 		self.assertEqual(self.transm.proceed(
@@ -180,6 +198,11 @@ class Transmitter(TransmitterBase):
 			(0, None))
 		self.assertEqual(self.transm.proceed(
 			["get", "dbpurgeage"]),
+			(0, None))
+		# the same (again with jails / not changed):
+		self.server.addJail(self.jailName, "auto")
+		self.assertEqual(self.transm.proceed(
+			["set", "dbfile", "None"]),
 			(0, None))
 		os.close(tmp)
 		os.unlink(tmpFilename)
@@ -539,7 +562,6 @@ class Transmitter(TransmitterBase):
 			)
 		)
 
-
 	def testAction(self):
 		action = "TestCaseAction"
 		cmdList = [
@@ -741,6 +763,7 @@ class Transmitter(TransmitterBase):
 			["set", jailName, "deljournalmatch", value])
 		self.assertTrue(isinstance(result[1], ValueError))
 
+
 class TransmitterLogging(TransmitterBase):
 
 	def setUp(self):
@@ -787,7 +810,15 @@ class TransmitterLogging(TransmitterBase):
 		self.setGetTestNOK("logtarget", "SYSLOG")
 		# set back for other tests
 		self.setGetTest("syslogsocket", "/dev/log")
-		self.setGetTest("logtarget", "SYSLOG")
+		self.setGetTest("logtarget", "SYSLOG",
+			**{True: {},    # should work on Linux
+			   False: dict( # expect to fail otherwise
+				   outCode=1,
+				   outValue=Exception('Failed to change log target'),
+				   repr_=True # Exceptions are not comparable apparently
+                                  )
+			  }[platform.system() in ('Linux',) and os.path.exists('/dev/log')]
+		)
 
 	def testLogLevel(self):
 		self.setGetTest("loglevel", "HEAVYDEBUG")
@@ -857,6 +888,7 @@ class JailTests(unittest.TestCase):
 		jail = Jail(longname)
 		self.assertEqual(jail.name, longname)
 
+
 class RegexTests(unittest.TestCase):
 
 	def testInit(self):
@@ -881,9 +913,11 @@ class RegexTests(unittest.TestCase):
 		self.assertTrue(fr.hasMatched())
 		self.assertRaises(RegexException, fr.getHost)
 
+
 class _BadThread(JailThread):
 	def run(self):
 		raise RuntimeError('run bad thread exception')
+
 
 class LoggingTests(LogCaptureTestCase):
 
